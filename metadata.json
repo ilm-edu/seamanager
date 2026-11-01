@@ -1,0 +1,6 @@
+{
+  "name": "Seat manager ai studio",
+  "description": "An advanced Madrasa exam hall seating allocator, attendance tracker, and custom label printer with automated WhatsApp data parsing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
