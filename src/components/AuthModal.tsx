@@ -77,16 +77,25 @@ export default function AuthModal({
 
   const startScanning = async () => {
     setShowScanner(true);
+    setErrorMsg(null);
     scannerRef.current = new BrowserMultiFormatReader();
     try {
-      const result = await scannerRef.current.decodeFromVideoDevice(null, videoRef.current!, (result) => {
+      await scannerRef.current.decodeFromVideoDevice(null, videoRef.current!, (result) => {
         if (result) {
           setLinkQrInput(result.getText());
           stopScanning();
         }
       });
-    } catch (e) {
+    } catch (e: any) {
       console.warn("Scan error:", e);
+      setShowScanner(false);
+      setErrorMsg(
+        e?.name === "NotAllowedError" || e?.name === "NotFoundError"
+          ? (lang === "ml"
+              ? "ക്യാമറ അനുമതി നിഷേധിച്ചു. ദയവായി ബ്രൗസർ സെറ്റിംഗ്സിൽ ക്യാമറ അനുമതി നൽകുക അല്ലെങ്കിൽ സ്ക്രീനിലുള്ള കോഡ് ഉപയോഗിക്കുക."
+              : "Camera permission was denied. Please allow camera access in browser settings or use the code on screen.")
+          : (lang === "ml" ? "ക്യാമറ പ്രവർത്തിപ്പിക്കുന്നതിൽ തടസ്സം." : "Could not initialize camera.")
+      );
     }
   };
 
@@ -181,47 +190,18 @@ export default function AuthModal({
     return () => {
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
-  }, [isOpen, currentUser, qrCodeStr, showQRBox, lang]);
+  }, [isOpen, currentUser, qrCodeStr, showQRBox, lang, onClose]);
 
   if (!isOpen) return null;
 
-  const handleGoogleSignIn = async (overrideEmail?: string) => {
+  const handleGoogleSignIn = async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const targetEmail = overrideEmail || fallbackEmailVal;
-      const draftProfile = {
-        name: localStorage.getItem("madrasa_name") || "",
-        regNo: localStorage.getItem("madrasa_reg_no") || "",
-        place: localStorage.getItem("madrasa_place") || "",
-        phone: localStorage.getItem("madrasa_whatsapp") || "",
-        email: targetEmail
-      };
-      if (overrideEmail) {
-        const { session, profile } = await loginWithDirectEmailOrPhone(overrideEmail, undefined, draftProfile);
-        onAuthSuccess(session, profile);
-        setSuccessMsg(
-          profile.role === "superadmin"
-            ? (lang === "ml" ? "👑 സൂപ്പർ അഡ്മിൻ അക്കൗണ്ട് വിജയകരമായി ലോഗിൻ ചെയ്തു!" : "👑 SuperAdmin Account Verified & Logged in!")
-            : (lang === "ml" ? "അക്കൗണ്ട് വഴി വിജയകരമായി ലോഗിൻ ചെയ്തു!" : "Logged in successfully!")
-        );
-        setTimeout(() => onClose(), 500);
-        return;
-      }
-      const { session, profile } = await loginWithGoogle(draftProfile, targetEmail);
-      onAuthSuccess(session, profile);
-      setSuccessMsg(
-        profile.role === "superadmin"
-          ? (lang === "ml" ? "👑 സൂപ്പർ അഡ്മിൻ ഗൂഗിൾ അക്കൗണ്ട് വിജയകരമായി ലോഗിൻ ചെയ്തു!" : "👑 SuperAdmin Google Account Verified & Logged in!")
-          : (lang === "ml" ? "ഗൂഗിൾ അക്കൗണ്ട് വഴി വിജയകരമായി ലോഗിൻ ചെയ്തു!" : "Logged in with Google successfully!")
-      );
-      setTimeout(() => {
-        onClose();
-      }, 500);
+      await loginWithGoogle();
     } catch (err: any) {
       console.error("Google login error:", err);
-      setErrorMsg(err.message || (lang === "ml" ? "ഗൂഗിൾ ലോഗിൻ ചെയ്യുന്നതിൽ തടസ്സം നേരിട്ടു." : "Google Sign-In failed. Please try again or use direct login below."));
-    } finally {
+      setErrorMsg(err.message || (lang === "ml" ? "ഗൂഗിൾ ലോഗിൻ ചെയ്യുന്നതിൽ തടസ്സം നേരിട്ടു." : "Google Sign-In failed. Please try again."));
       setLoading(false);
     }
   };
@@ -648,16 +628,6 @@ export default function AuthModal({
                 </span>
               </button>
 
-              {/* Direct SuperAdmin 1-Click Access */}
-              <button
-                type="button"
-                onClick={() => handleGoogleSignIn("edavachalniyas@gmail.com")}
-                disabled={loading}
-                className="w-full py-2.5 px-4 bg-purple-900/10 hover:bg-purple-900/20 text-purple-950 font-bold border border-purple-300 rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-2"
-              >
-                <ShieldCheck className="w-4 h-4 text-purple-700" />
-                <span>{lang === "ml" ? "സൂപ്പർ അഡ്മിൻ ആക്സസ് (edavachalniyas@gmail.com)" : "Super Admin Sign-In (edavachalniyas@gmail.com)"}</span>
-              </button>
 
 
 

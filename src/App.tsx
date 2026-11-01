@@ -240,7 +240,7 @@ import { LabelMeasurementGuide } from "./components/LabelMeasurementGuide";
 import { ClassDivisionMatrix } from "./components/ClassDivisionMatrix";
 import { MASTER_SUBJECTS_DIRECTORY, getSubjectsForClass, getSeparatedSubjectsForClass, SubjectItem, normalizeClassKey, formatDateWithDay, toDateInputValue, compute7DayExamSlots, ExamDaySlot, saveMasterSubjectsDirectory, getMasterSubjectsDirectory, fetchRemoteSubjectDirectory } from "./data/subjectDirectory";
 import { DEFAULT_OFFICIAL_TIMETABLES } from "./data/defaultTimetables";
-import { AppUserSession, getSavedLocalSession, isSuperAdminEmail } from "./authService";
+import { AppUserSession, getSavedLocalSession, isSuperAdminEmail, processGoogleRedirectResult } from "./authService";
 import { auth, db } from "./firebase";
 import { onAuthStateChanged, User as FirebaseUser } from "firebase/auth";
 import { doc, getDoc, setDoc, onSnapshot, serverTimestamp } from "firebase/firestore";
@@ -489,7 +489,8 @@ export default function App() {
   });
 
   const isVerifiedSuperAdmin = useMemo(() => {
-    return !!(currentUser && currentUser.email && isSuperAdminEmail(currentUser.email));
+    // Strict authentication check: requires non-anonymous, non-null Firebase session
+    return !!(auth.currentUser && currentUser && currentUser.email && isSuperAdminEmail(currentUser.email));
   }, [currentUser]);
 
   // ROLE ARCHITECTURE & COURIER ORDER MODAL
@@ -1086,6 +1087,22 @@ export default function App() {
 
   // Restore & listen to Auth state
   useEffect(() => {
+    // 1. Handle Redirect Result
+    processGoogleRedirectResult().then(result => {
+      if (result) {
+        setCurrentUser(result.session);
+        setCurrentInstitution(result.profile);
+        showToast(
+          lang === "ml" ? "🎉 ഗൂഗിൾ അക്കൗണ്ട് വഴി വിജയകരമായി ലോഗിൻ ചെയ്തു!" : "🎉 Logged in with Google successfully!",
+          "success"
+        );
+      }
+    }).catch(err => {
+      console.error("Redirect login error:", err);
+      showToast(lang === "ml" ? "ലോഗിൻ ചെയ്യുന്നതിൽ തടസ്സം നേരിട്ടു." : "Login failed.", "error");
+    });
+
+    // 2. Load cached session
     const saved = getSavedLocalSession();
     if (saved.session && saved.profile) {
       setCurrentUser(saved.session);

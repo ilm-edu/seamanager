@@ -1,7 +1,8 @@
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
-  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider,
   signInAnonymously,
   signOut as firebaseSignOut,
@@ -73,89 +74,32 @@ function generateUidFromEmail(email: string): string {
   return "inst_" + Math.abs(hash).toString(36) + "_" + email.split("@")[0].replace(/[^a-zA-Z0-9]/g, "");
 }
 
-export async function loginWithGoogle(
-  draftProfile?: Partial<SaaSInstitutionProfile>,
-  fallbackEmail?: string
-): Promise<{ session: AppUserSession; profile: SaaSInstitutionProfile }> {
+export async function loginWithGoogle(): Promise<void> {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
+  await signInWithRedirect(auth, provider);
+}
 
-  let sessionUid = "";
-  let userEmail = "";
-  let userName = "";
-  let userPhoto: string | null = null;
-  let userSession: AppUserSession;
+export async function processGoogleRedirectResult(): Promise<{ session: AppUserSession; profile: SaaSInstitutionProfile } | null> {
+  const result = await getRedirectResult(auth);
+  if (!result) return null;
 
-  try {
-    if (!auth) {
-      throw new Error("Firebase Auth is initializing, please try again in a moment.");
-    }
-    const result = await signInWithPopup(auth, provider);
-    const user = result.user;
-    sessionUid = user.uid;
-    userEmail = (user.email || "").toLowerCase();
-    userName = user.displayName || userEmail.split("@")[0];
-    userPhoto = user.photoURL;
+  const user = result.user;
+  const sessionUid = user.uid;
+  const userEmail = (user.email || "").toLowerCase();
+  const userName = user.displayName || userEmail.split("@")[0];
+  const userPhoto = user.photoURL;
 
-    userSession = {
-      uid: user.uid,
-      email: userEmail,
-      displayName: userName,
-      photoURL: userPhoto,
-      isAnonymous: false
-    };
-  } catch (err: any) {
-    console.warn("Google signInWithPopup error/closed:", err);
-    const errCode = err?.code || "";
-    const isDomainOrPopupOrArg = 
-      errCode === "auth/unauthorized-domain" || 
-      errCode === "auth/popup-blocked" || 
-      errCode === "auth/operation-not-allowed" ||
-      errCode === "auth/argument-error" ||
-      err?.message?.includes("unauthorized") ||
-      err?.message?.includes("argument-error") ||
-      err?.message?.includes("popup") ||
-      err?.message?.includes("GOOGLE_POPUP_OR_DOMAIN_ISSUE");
-
-    if (isDomainOrPopupOrArg) {
-      const explicitEmail = (fallbackEmail || draftProfile?.email || "").trim().toLowerCase();
-      // If user typed an explicit email in draftProfile or fallbackEmail, use it, but NEVER default to superadmin
-      if (explicitEmail) {
-        sessionUid = generateUidFromEmail(explicitEmail);
-        userEmail = explicitEmail;
-        userName = explicitEmail.split("@")[0];
-        userSession = {
-          uid: sessionUid,
-          email: userEmail,
-          displayName: userName,
-          photoURL: null,
-          isAnonymous: false
-        };
-      } else {
-        const customErr: any = new Error(
-          "Google Sign-In popup was blocked on this browser. Please enter your Google Email or Phone Number below to log in directly."
-        );
-        customErr.code = errCode || "auth/popup-blocked";
-        throw customErr;
-      }
-    } else {
-      const customErr: any = new Error(
-        err?.message || "Google Sign-In was cancelled or could not be completed."
-      );
-      customErr.code = errCode;
-      throw customErr;
-    }
-  }
+  const userSession: AppUserSession = {
+    uid: sessionUid,
+    email: userEmail,
+    displayName: userName,
+    photoURL: userPhoto,
+    isAnonymous: false
+  };
 
   const isSuper = isSuperAdminEmail(userEmail);
   const userRole = isSuper ? "superadmin" : "institution";
-
-  // Check if user pre-entered local data before logging in
-  const localDraftName = draftProfile?.name || localStorage.getItem("madrasa_name") || "";
-  const isDraftRealName = localDraftName.trim() !== "" && localDraftName !== "My Madrasa" && localDraftName !== "Default Madrasa";
-  const localDraftReg = draftProfile?.regNo || localStorage.getItem("madrasa_reg_no") || "";
-  const localDraftPlace = draftProfile?.place || localStorage.getItem("madrasa_place") || "Kerala";
-  const localDraftPhone = draftProfile?.phone || localStorage.getItem("madrasa_whatsapp") || "";
 
   // Load or create Institution Profile from Firestore
   let profile: SaaSInstitutionProfile;
@@ -169,35 +113,14 @@ export async function loginWithGoogle(
       if (isSuper && profile.role !== "superadmin") {
         profile.role = "superadmin";
         await setDoc(instDocRef, { role: "superadmin" }, { merge: true });
-      } else if (!isSuper && isDraftRealName && (!profile.name || profile.name === "My Madrasa" || profile.name.endsWith("'s Institution"))) {
-        // If existing cloud profile was a placeholder but user typed a real institution name locally before login, preserve user's typed name
-        profile.name = localDraftName;
-        if (localDraftReg) profile.regNo = localDraftReg;
-        if (localDraftPlace) profile.place = localDraftPlace;
-        if (localDraftPhone) profile.phone = localDraftPhone;
-        await setDoc(instDocRef, { 
-          name: profile.name, 
-          regNo: profile.regNo, 
-          place: profile.place, 
-          phone: profile.phone,
-          updatedAt: serverTimestamp() 
-        }, { merge: true });
       }
     } else {
-      const initialName = isSuper 
-        ? "State Central Board SuperAdmin" 
-        : (isDraftRealName ? localDraftName : (userName ? `${userName}'s Institution` : "My Madrasa"));
-
-      const initialReg = isSuper 
-        ? "CENTRAL-BOARD-DIRECT" 
-        : (localDraftReg && localDraftReg !== "REG-2026" ? localDraftReg : "REG-" + sessionUid.slice(-6).toUpperCase());
-
       profile = {
         id: sessionUid,
-        name: initialName,
-        regNo: initialReg,
-        place: localDraftPlace || "Kerala",
-        phone: localDraftPhone || "",
+        name: isSuper ? "State Central Board SuperAdmin" : (userName ? `${userName}'s Institution` : "My Madrasa"),
+        regNo: isSuper ? "CENTRAL-BOARD-DIRECT" : ("REG-" + sessionUid.slice(-6).toUpperCase()),
+        place: "Kerala",
+        phone: "",
         email: userEmail,
         ownerUid: sessionUid,
         role: userRole
@@ -213,10 +136,10 @@ export async function loginWithGoogle(
     console.warn("Firestore profile fetch fallback:", dbErr);
     profile = {
       id: sessionUid,
-      name: isSuper ? "State Central Board SuperAdmin" : (isDraftRealName ? localDraftName : (userName || "My Madrasa")),
-      regNo: isSuper ? "CENTRAL-BOARD-DIRECT" : (localDraftReg || "REG-DEFAULT"),
-      place: localDraftPlace || "Kerala",
-      phone: localDraftPhone || "",
+      name: userName || "My Madrasa",
+      regNo: "REG-DEFAULT",
+      place: "Kerala",
+      phone: "",
       email: userEmail,
       ownerUid: sessionUid,
       role: userRole
@@ -246,7 +169,10 @@ export async function loginWithDirectEmailOrPhone(
   let sessionUid = "";
 
   const isSuper = isEmail && isSuperAdminEmail(userEmail);
-  const userRole = isSuper ? "superadmin" : "institution";
+  if (isSuper) {
+    throw new Error("Super Admin accounts must sign in using verified Google Authentication.");
+  }
+  const userRole = "institution";
 
   // Try anonymous auth or get current auth UID if available
   try {
