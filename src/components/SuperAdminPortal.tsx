@@ -83,7 +83,7 @@ import {
   calculateSequentialDates
 } from "../data/subjectDirectory";
 import { DEFAULT_OFFICIAL_TIMETABLES } from "../data/defaultTimetables";
-import { doc, getDoc, setDoc, deleteDoc } from "firebase/firestore";
+import { doc, getDoc, setDoc, deleteDoc, collection, getDocs } from "firebase/firestore";
 import { db } from "../firebase";
 import {
   SystemConfig, 
@@ -121,6 +121,7 @@ export interface CRMUser {
   ordersCount: number;
   source: string;
   notes?: string;
+  students?: any[];
 }
 
 interface SuperAdminPortalProps {
@@ -607,7 +608,10 @@ export default function SuperAdminPortal({ onSwitchToUserMode, onImportMadrasaTo
       setSubmissions(prev => prev.filter(s => s.id !== user.id && s.ownerUid !== user.id));
       setOrders(prev => prev.orderList ? prev.orderList.filter(o => o.id !== user.id && o.ownerUid !== user.id) : prev);
       try {
-        await fetch(`/api/admin/delete-user/${user.id}`, { method: "DELETE" });
+        await fetch(`/api/admin/delete-user/${user.id}`, { 
+          method: "DELETE",
+          headers: { "x-admin-email": auth.currentUser?.email || "edavachalniyas@gmail.com" }
+        });
       } catch (e) {}
 
       alert(`Successfully deleted user "${user.name}" and cleared all associated database records.`);
@@ -788,7 +792,47 @@ export default function SuperAdminPortal({ onSwitchToUserMode, onImportMadrasaTo
 
       setSubmissions(resSubs.submissions || []);
       setSystemConfig(resSysConfig);
-      setCrmUsers(resCrm.users || []);
+
+      let unifiedCrm: CRMUser[] = resCrm.users || [];
+      try {
+        if (db) {
+          const instSnap = await getDocs(collection(db, "institutions"));
+          instSnap.forEach(d => {
+            const data = d.data();
+            if (data && (data.name || data.email)) {
+              const cleanPhone = (data.phone || "").replace(/[^0-9]/g, "");
+              const p10 = cleanPhone.slice(-10);
+              const exists = unifiedCrm.some(u => 
+                u.id === d.id || 
+                (p10 && u.phone && u.phone.includes(p10)) ||
+                (data.name && u.name && u.name.trim().toLowerCase() === data.name.trim().toLowerCase())
+              );
+              if (!exists) {
+                unifiedCrm.push({
+                  id: d.id,
+                  name: data.name || "Registered Madrasa",
+                  phone: data.phone || "",
+                  regNo: data.regNo || "REG-2026",
+                  place: data.place || "Kerala",
+                  email: data.email || "",
+                  studentCount: 0,
+                  hallCount: 0,
+                  lastActiveAt: data.updatedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
+                  firstSeenAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
+                  lastAction: "Google / Cloud Login",
+                  totalActionsCount: 1,
+                  ordersCount: 0,
+                  source: "Cloud Institution",
+                  notes: ""
+                });
+              }
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("Firestore institutions sync notice:", e);
+      }
+      setCrmUsers(unifiedCrm);
       if (resDir) {
         setMasterDir(resDir);
       }
@@ -2391,23 +2435,51 @@ export default function SuperAdminPortal({ onSwitchToUserMode, onImportMadrasaTo
 
   // Filter CRM users
   const getFilteredCrmUsers = () => {
-    let list = crmUsers.length > 0 ? crmUsers : submissions.map(s => ({
-      id: s.id,
-      name: s.name,
-      phone: s.phone,
-      regNo: s.regNo,
-      place: s.place,
-      email: s.email,
-      studentCount: s.students?.length || 0,
-      hallCount: 0,
-      lastActiveAt: s.submittedAt || new Date().toISOString(),
-      firstSeenAt: s.submittedAt || new Date().toISOString(),
-      lastAction: "Registered Madrasa",
-      totalActionsCount: 1,
-      ordersCount: 0,
-      source: "Submissions",
-      notes: ""
-    }));
+    const userMap = new Map<string, CRMUser>();
+
+    // 1. Add tracked CRM users
+    (crmUsers || []).forEach(u => {
+      const key = (u.phone ? u.phone.replace(/[^0-9]/g, "").slice(-10) : "") || u.id || (u.name || "").toLowerCase();
+      userMap.set(key, { ...u });
+    });
+
+    // 2. Unify with submissions so portal submissions are never hidden
+    (submissions || []).forEach(s => {
+      const key = (s.phone ? s.phone.replace(/[^0-9]/g, "").slice(-10) : "") || s.id || (s.name || "").toLowerCase();
+      const existing = userMap.get(key);
+      if (existing) {
+        if (!existing.studentCount && s.students?.length) {
+          existing.studentCount = s.students.length;
+        }
+        if (!existing.regNo && s.regNo) existing.regNo = s.regNo;
+        if (!existing.place && s.place) existing.place = s.place;
+        if (!existing.email && s.email) existing.email = s.email;
+        if ((!existing.students || existing.students.length === 0) && Array.isArray(s.students)) {
+          (existing as any).students = s.students;
+        }
+      } else {
+        userMap.set(key, {
+          id: s.id,
+          name: s.name,
+          phone: s.phone,
+          regNo: s.regNo || "REG-2026",
+          place: s.place || "Kerala",
+          email: s.email || "",
+          studentCount: s.students?.length || 0,
+          hallCount: 0,
+          students: s.students || [],
+          lastActiveAt: s.updatedAt || s.submittedAt || new Date().toISOString(),
+          firstSeenAt: s.submittedAt || new Date().toISOString(),
+          lastAction: "Registered Madrasa",
+          totalActionsCount: 1,
+          ordersCount: 0,
+          source: "Portal Submission",
+          notes: ""
+        } as any);
+      }
+    });
+
+    let list = Array.from(userMap.values());
 
     if (crmSearchQuery.trim()) {
       const q = crmSearchQuery.toLowerCase();

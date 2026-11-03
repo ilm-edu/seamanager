@@ -15,7 +15,7 @@ import { Language } from "../translations";
 interface FactoryResetModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onFactoryWipe: (mode: "clean_slate" | "fresh_template") => void;
+  onFactoryWipe: (mode?: "clean_slate" | "fresh_template") => void;
   totalStudents: number;
   totalHalls: number;
   madrasaName: string;

@@ -209,7 +209,7 @@ export const getClassColor = (classLevel: string | null | undefined) => {
       };
   }
 };
-import { initialHalls, initialStudents } from "./mockData";
+
 import { postgresSchema, pythonScript, nodeScript } from "./saasDeliverables";
 import PublicPortal from "./components/PublicPortal";
 import SuperAdminPortal from "./components/SuperAdminPortal";
@@ -488,10 +488,15 @@ export default function App() {
     return saved.profile;
   });
 
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(() => auth.currentUser);
+  const [isAuthInitialized, setIsAuthInitialized] = useState(false);
+
   const isVerifiedSuperAdmin = useMemo(() => {
     // Strict authentication check: requires non-anonymous, non-null Firebase session
-    return !!(auth.currentUser && currentUser && currentUser.email && isSuperAdminEmail(currentUser.email));
-  }, [currentUser]);
+    const active = firebaseUser || auth.currentUser;
+    const email = active?.email || currentUser?.email;
+    return !!(active && !active.isAnonymous && email && isSuperAdminEmail(email));
+  }, [firebaseUser, currentUser]);
 
   // ROLE ARCHITECTURE & COURIER ORDER MODAL
   const [roleMode, setRoleMode] = useState<"user" | "admin">(() => {
@@ -515,7 +520,7 @@ export default function App() {
 
   // Strict Security Enforcement: Require active authenticated SuperAdmin Firebase session
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !isAuthInitialized) return;
     const search = window.location.search;
     const hash = window.location.hash;
     const isSuperAdminRequested = search.includes("view=admin") || search.includes("view=superadmin") || search.includes("admin=true") || hash === "#admin" || hash === "#superadmin";
@@ -531,7 +536,7 @@ export default function App() {
         lang === "ml" ? "ലോഗിൻ ആവശ്യമാണ്" : "SuperAdmin Authentication Required"
       );
     }
-  }, [roleMode, isVerifiedSuperAdmin, lang]);
+  }, [roleMode, isVerifiedSuperAdmin, lang, isAuthInitialized]);
 
   const triggerSaveWorkPromptIfNeeded = () => {
     if (currentUser) return;
@@ -1030,55 +1035,32 @@ export default function App() {
   const [superAdminPasscode, setSuperAdminPasscode] = useState("");
   const [superAdminError, setSuperAdminError] = useState("");
 
-  const handleFactoryWipe = (mode: "clean_slate" | "fresh_template") => {
-    if (mode === "clean_slate") {
-      setStudents([]);
-      setHalls([]);
-      setSeatingResult(null);
-      const blankMap: Record<string, Array<{ id: string; division: string; boys: number; girls: number }>> = {};
-      for (let i = 1; i <= 12; i++) {
-        blankMap[`Class ${i}`] = [{ id: `c${i}-A`, division: "A", boys: 0, girls: 0 }];
-      }
-      setClassDivisionsMap(blankMap);
-      try {
-        localStorage.removeItem("madrasa_students");
-        localStorage.removeItem("madrasa_halls");
-        localStorage.setItem("madrasa_class_divisions_map", JSON.stringify(blankMap));
-      } catch (e) {}
-      if (currentUser) {
-        setDoc(doc(db, "institutions", currentUser.uid, "data", "examMaster"), {
-          students: [],
-          halls: [],
-          updatedAt: serverTimestamp()
-        }, { merge: true }).catch(err => console.warn("Firestore wipe error:", err));
-      }
-      showToast(
-        lang === "ml" ? "✨ എല്ലാ ഡാറ്റയും വിജയകരമായി മായ്ച്ചു (Clean Slate)." : "✨ All workspace data wiped to Clean Slate.",
-        "success",
-        lang === "ml" ? "ഫാക്ടറി റീസെറ്റ് പൂർത്തിയായി" : "Factory Reset Complete"
-      );
-    } else {
-      setStudents(initialStudents);
-      setHalls(initialHalls);
-      try {
-        localStorage.setItem("madrasa_students", JSON.stringify(initialStudents));
-        localStorage.setItem("madrasa_halls", JSON.stringify(initialHalls));
-      } catch (e) {}
-      if (currentUser) {
-        setDoc(doc(db, "institutions", currentUser.uid, "data", "examMaster"), {
-          students: initialStudents,
-          halls: initialHalls,
-          updatedAt: serverTimestamp()
-        }, { merge: true }).catch(err => console.warn("Firestore restore error:", err));
-      }
-      showToast(
-        lang === "ml" ? "📦 ഡെമോ ഡാറ്റ വീണ്ടും ലോഡ് ചെയ്തു." : "📦 Sample demo template loaded.",
-        "info"
-      );
-      setTimeout(() => {
-        triggerAllocation();
-      }, 100);
+  const handleFactoryWipe = (mode?: "clean_slate" | "fresh_template") => {
+    setStudents([]);
+    setHalls([]);
+    setSeatingResult(null);
+    const blankMap: Record<string, Array<{ id: string; division: string; boys: number; girls: number }>> = {};
+    for (let i = 1; i <= 12; i++) {
+      blankMap[`Class ${i}`] = [{ id: `c${i}-A`, division: "A", boys: 0, girls: 0 }];
     }
+    setClassDivisionsMap(blankMap);
+    try {
+      localStorage.removeItem("madrasa_students");
+      localStorage.removeItem("madrasa_halls");
+      localStorage.setItem("madrasa_class_divisions_map", JSON.stringify(blankMap));
+    } catch (e) {}
+    if (currentUser) {
+      setDoc(doc(db, "institutions", currentUser.uid, "data", "examMaster"), {
+        students: [],
+        halls: [],
+        updatedAt: serverTimestamp()
+      }, { merge: true }).catch(err => console.warn("Firestore wipe error:", err));
+    }
+    showToast(
+      lang === "ml" ? "✨ എല്ലാ ഡാറ്റയും വിജയകരമായി മായ്ച്ചു (Clean Slate)." : "✨ All workspace data wiped to Clean Slate.",
+      "success",
+      lang === "ml" ? "ഫാക്ടറി റീസെറ്റ് പൂർത്തിയായി" : "Factory Reset Complete"
+    );
   };
   const [isCloudSyncing, setIsCloudSyncing] = useState(false);
   const [isSyncPending, setIsSyncPending] = useState(false);
@@ -1117,6 +1099,8 @@ export default function App() {
     }
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setFirebaseUser(user);
+      setIsAuthInitialized(true);
       if (user) {
         const uSession: AppUserSession = {
           uid: user.uid,
@@ -1641,12 +1625,21 @@ export default function App() {
     const mPlace = subData.place || "Kerala";
     const mPhone = subData.whatsapp || subData.phone || "";
 
-    const mStudents = (subData.students && subData.students.length > 0 ? subData.students : initialStudents).map((s: any) => ({
+    const mStudents = (subData.students && Array.isArray(subData.students) ? subData.students : []).map((s: any) => ({
       ...s,
       shift: s.shift === "Morning" ? "Shift 1" : (s.shift === "Afternoon" ? "Shift 2" : (s.shift || "Shift 1"))
     }));
 
-    const mHalls = (subData.halls && subData.halls.length > 0 ? subData.halls : initialHalls).map((h: any) => ({
+    const defaultSingleHall = [{
+      id: "hall-1",
+      name: "Hall 1",
+      benchesCount: 10,
+      benchCapacity: 3,
+      isAutomaticCapacity: true,
+      reservedShift: "Both"
+    }];
+
+    const mHalls = (subData.halls && Array.isArray(subData.halls) && subData.halls.length > 0 ? subData.halls : defaultSingleHall).map((h: any) => ({
       ...h,
       reservedShift: h.reservedShift === "Morning" ? "Shift 1" : (h.reservedShift === "Afternoon" ? "Shift 2" : (h.reservedShift || "Both"))
     }));
@@ -1856,10 +1849,7 @@ export default function App() {
       place: newMadrasaForm.place || "Kerala",
       whatsapp: newMadrasaForm.whatsapp || "",
       students: [],
-      halls: initialHalls.map(h => ({
-        ...h,
-        id: "hall-" + Date.now() + "-" + Math.floor(Math.random() * 1000)
-      })),
+      halls: [],
       classShiftMap: {
         "Class 1": "Shift 1" as const,
         "Class 2": "Shift 1" as const,
@@ -5824,49 +5814,7 @@ export default function App() {
     setTimeout(() => setQuickHallSuccessMsg(null), 4000);
   };
 
-  const executeLoadDemoData = () => {
-    setStudents(initialStudents);
-    setHalls(initialHalls);
-    try {
-      localStorage.setItem("madrasa_students", JSON.stringify(initialStudents));
-      localStorage.setItem("madrasa_halls", JSON.stringify(initialHalls));
-    } catch (e) {}
-    if (currentUser) {
-      setDoc(doc(db, "institutions", currentUser.uid, "data", "examMaster"), {
-        students: initialStudents,
-        halls: initialHalls,
-        updatedAt: serverTimestamp()
-      }, { merge: true }).catch(err => console.warn("Firestore restore error:", err));
-    }
-    showToast(
-      lang === "ml" ? "✨ സാമ്പിൾ ഡെമോ ഡാറ്റ ലോഡ് ചെയ്തു!" : "✨ Sample demo data loaded successfully!",
-      "success",
-      lang === "ml" ? "ഡെമോ ഡാറ്റ" : "Demo Data"
-    );
-    setTimeout(() => {
-      triggerAllocation();
-    }, 100);
-  };
 
-  const handleLoadDemoData = () => {
-    if (students.length > 0 || halls.length > 0) {
-      setConfirmDialog({
-        title: "സാമ്പിൾ ഡെമോ ഡാറ്റ ലോഡ് ചെയ്യണോ?",
-        titleEn: "Load Sample Demo Data?",
-        message: "സോഫ്റ്റ്‌വെയറിന്റെ പ്രവർത്തനം പരീക്ഷിച്ചു നോക്കുന്നതിനായി സാമ്പിൾ കുട്ടികളുടെയും ഹാളുകളുടെയും വിവരങ്ങൾ ലോഡ് ചെയ്യും. നിലവിലെ ലിസ്റ്റിലുള്ള വിവരങ്ങൾ മാറി ഡെമോ ഡാറ്റ വരുന്നതായിരിക്കും.",
-        messageEn: "Load sample Madrasa students & exam halls to test the application. Note that this will replace your current student and hall list.",
-        type: "info",
-        icon: "sparkles",
-        confirmText: "അതെ, ഡെമോ ലോഡ് ചെയ്യുക",
-        confirmTextEn: "Yes, Load Demo Data",
-        cancelText: "റദ്ദാക്കുക",
-        cancelTextEn: "Cancel",
-        onConfirm: () => executeLoadDemoData()
-      });
-    } else {
-      executeLoadDemoData();
-    }
-  };
 
   const handleDeleteHall = (id: string) => {
     const target = halls.find(h => h.id === id);
@@ -5919,25 +5867,7 @@ export default function App() {
     });
   };
 
-  const handleResetDefaults = () => {
-    setConfirmDialog({
-      title: "ഡെമോ ഡാറ്റ റീസ്റ്റോർ ചെയ്യണോ?",
-      titleEn: "Restore Sample Demo Data?",
-      message: "സാമ്പിൾ മദ്റസ കുട്ടികളെയും ഹാളുകളെയും വീണ്ടും ലോഡ് ചെയ്യാൻ നിങ്ങൾ ആഗ്രഹിക്കുന്നുണ്ടോ?",
-      messageEn: "Are you sure you want to restore original sample Madrasa students and exam halls?",
-      type: "info",
-      icon: "sparkles",
-      confirmText: "റീസ്റ്റോർ ചെയ്യുക",
-      confirmTextEn: "Restore Demo",
-      cancelText: "റദ്ദാക്കുക",
-      cancelTextEn: "Cancel",
-      onConfirm: () => {
-        setStudents(initialStudents);
-        setHalls(initialHalls);
-        showToast(lang === "ml" ? "ഡെമോ ഡാറ്റ റീസ്റ്റോർ ചെയ്തു." : "Sample demo data restored.", "info");
-      }
-    });
-  };
+
 
   // Memoized unique classes list
   const allUniqueClasses = React.useMemo(() => {
@@ -6228,55 +6158,80 @@ export default function App() {
 
   if (activeAppView === "landing") {
     return (
-      <LandingPage
-        systemConfig={appSystemConfig}
-        isAdminLoggedIn={isVerifiedSuperAdmin}
-        onEnterWorkspace={() => {
-          console.log("onEnterWorkspace clicked. CurrentUser:", currentUser);
-          if (!currentUser) {
-            console.log("currentUser is null, calling setIsAuthModalOpen(true)");
+      <>
+        <LandingPage
+          systemConfig={appSystemConfig}
+          isAdminLoggedIn={isVerifiedSuperAdmin}
+          currentUser={currentUser}
+          currentInstitution={currentInstitution}
+          onEnterWorkspace={() => {
+            sessionStorage.setItem("madrasa_active_view", "workspace");
+            setActiveAppView("workspace");
+            window.history.pushState({}, "", "?view=workspace");
+          }}
+          onOpenResultPortal={() => {
+            setActiveAppView("result_portal");
+            window.history.pushState({}, "", "?view=result");
+          }}
+          onOpenResultManager={() => {
+            sessionStorage.setItem("madrasa_active_view", "result_manager");
+            setActiveAppView("result_manager");
+            window.history.pushState({}, "", "?view=result-admin");
+          }}
+          onOpenTarbiyahSuite={() => {
+            sessionStorage.setItem("madrasa_active_view", "tarbiyah_suite");
+            setActiveAppView("tarbiyah_suite");
+            window.history.pushState({}, "", "?view=tarbiyah");
+          }}
+          onOpenTarbiyahPortal={() => {
+            setActiveAppView("tarbiyah_portal");
+            window.history.pushState({}, "", "?view=tarbiyah-portal");
+          }}
+          onOpenSuperAdmin={() => {
+            sessionStorage.setItem("madrasa_active_view", "workspace");
+            setActiveAppView("workspace");
+            setRoleMode("admin");
+            window.history.pushState({}, "", "?view=superadmin");
+            if (!isVerifiedSuperAdmin) {
+              setIsAuthModalOpen(true);
+            }
+          }}
+          onOpenAuthModal={() => {
             setIsAuthModalOpen(true);
-            showToast(
-              lang === "ml"
-                ? "🔒 വർക്ക്‌സ്പീഡിലേക്ക് പ്രവേശിക്കാൻ ഗൂഗിൾ അക്കൗണ്ട് വഴി ലോഗിൻ ചെയ്യുക."
-                : "🔒 Please sign in with Google to enter the workspace.",
-              "warning"
-            );
-            return;
-          }
-          console.log("currentUser is logged in, navigating to workspace");
-          sessionStorage.setItem("madrasa_active_view", "workspace");
-          setActiveAppView("workspace");
-          window.history.pushState({}, "", "?view=workspace");
-        }}
-        onOpenResultPortal={() => {
-          setActiveAppView("result_portal");
-          window.history.pushState({}, "", "?view=result");
-        }}
-        onOpenResultManager={() => {
-          sessionStorage.setItem("madrasa_active_view", "result_manager");
-          setActiveAppView("result_manager");
-          window.history.pushState({}, "", "?view=result-admin");
-        }}
-        onOpenTarbiyahSuite={() => {
-          sessionStorage.setItem("madrasa_active_view", "tarbiyah_suite");
-          setActiveAppView("tarbiyah_suite");
-          window.history.pushState({}, "", "?view=tarbiyah");
-        }}
-        onOpenTarbiyahPortal={() => {
-          setActiveAppView("tarbiyah_portal");
-          window.history.pushState({}, "", "?view=tarbiyah-portal");
-        }}
-        onOpenSuperAdmin={() => {
-          sessionStorage.setItem("madrasa_active_view", "workspace");
-          setActiveAppView("workspace");
-          setRoleMode("admin");
-          window.history.pushState({}, "", "?view=superadmin");
-          if (!isVerifiedSuperAdmin) {
-            setIsAuthModalOpen(true);
-          }
-        }}
-      />
+          }}
+        />
+        <AuthModal
+          isOpen={isAuthModalOpen}
+          onClose={() => {
+            setIsAuthModalOpen(false);
+            setAuthSaveDataPrompt(false);
+          }}
+          currentUser={currentUser}
+          currentInstitution={currentInstitution}
+          onAuthSuccess={(user, profile) => {
+            setCurrentUser(user);
+            setCurrentInstitution(profile);
+            if (profile.name && !madrasaName) setMadrasaName(profile.name);
+            if (profile.regNo && !madrasaRegNo) setMadrasaRegNo(profile.regNo);
+            if (profile.place && !madrasaPlace) setMadrasaPlace(profile.place);
+            if (profile.phone && !madrasaWhatsapp) setMadrasaWhatsapp(profile.phone);
+            setIsAuthModalOpen(false);
+          }}
+          lang={lang}
+          saveDataPrompt={authSaveDataPrompt}
+          isSuperAdmin={isVerifiedSuperAdmin}
+          onOpenSuperAdminTab={(tab) => {
+            setSuperAdminTab(tab);
+            setRoleMode("admin");
+            sessionStorage.setItem("madrasa_active_view", "workspace");
+            setActiveAppView("workspace");
+            window.history.pushState({}, "", "?view=superadmin");
+          }}
+          onOpenQuickLicenseModal={() => {
+            setAdminQuickActivateData({ key: "", name: "", regNo: "" });
+          }}
+        />
+      </>
     );
   }
 
@@ -8136,17 +8091,6 @@ export default function App() {
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>{lang === "ml" ? "വിദ്യാർത്ഥികളെ ഒഴിവാക്കുക" : "Delete All Students"}</span>
                           </button>
-                          {students.length === 0 && (
-                            <button
-                              type="button"
-                              onClick={handleLoadDemoData}
-                              className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 transition rounded-xl text-xs font-bold border border-emerald-200 flex items-center gap-1 cursor-pointer"
-                              title="Load Sample Demo Data"
-                            >
-                              <span>✨</span>
-                              <span>{lang === "ml" ? "ഡെമോ ഡാറ്റ" : "Demo Data"}</span>
-                            </button>
-                          )}
                         </>
                       )}
                     </div>
@@ -17506,8 +17450,8 @@ _Principal / Headmaster, ${madrasaName}_`;
                           </h3>
                           <p className="text-xs text-slate-500">
                             {lang === "ml"
-                              ? "ബാക്കപ്പ് ഡൗൺലോഡ് ചെയ്യാനും, പഴയ ഫയൽ റീസ്റ്റോർ ചെയ്യാനും, ഡെമോ ഡാറ്റ / റീസെറ്റ് ഓപ്ഷനുകൾക്കും ഇവിടെ ക്ലിക്ക് ചെയ്യുക."
-                              : "Click to expand backup download, restore JSON file, load sample demo data, or factory reset."}
+                              ? "ബാക്കപ്പ് ഡൗൺലോഡ് ചെയ്യാനും, പഴയ ഫയൽ റീസ്റ്റോർ ചെയ്യാനും, ഫാക്ടറി റീസെറ്റ് ഓപ്ഷനുകൾക്കും ഇവിടെ ക്ലിക്ക് ചെയ്യുക."
+                              : "Click to expand backup download, restore JSON file, or factory reset."}
                           </p>
                         </div>
                       </div>
@@ -17533,7 +17477,7 @@ _Principal / Headmaster, ${madrasaName}_`;
                     </div>
 
                     {isBackupSectionExpanded && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-3 border-t border-slate-100 animate-in fade-in duration-150">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-3 border-t border-slate-100 animate-in fade-in duration-150">
                       {/* 1. Full Backup Download */}
                       <div className="p-4 bg-blue-50/70 border border-blue-200/80 rounded-xl space-y-3 flex flex-col justify-between">
                         <div>
@@ -17580,29 +17524,6 @@ _Principal / Headmaster, ${madrasaName}_`;
                             className="hidden"
                           />
                         </label>
-                      </div>
-
-                      {/* 3. Sample Demo Loader */}
-                      <div className="p-4 bg-emerald-50/70 border border-emerald-200/80 rounded-xl space-y-3 flex flex-col justify-between">
-                        <div>
-                          <div className="flex items-center gap-1.5 font-bold text-xs text-emerald-950">
-                            <span>✨</span>
-                            <span>{lang === "ml" ? "സാമ്പിൾ ഡെമോ ഡാറ്റ" : "Load Sample Demo Data"}</span>
-                          </div>
-                          <p className="text-2xs text-emerald-800/80 mt-1 leading-relaxed">
-                            {lang === "ml"
-                              ? "ഒരു മാതൃകാ മദ്റസയിലെ കുട്ടികളുടെയും ഹാളുകളുടെയും ഡെമോ വിവരങ്ങൾ ഒറ്റ ക്ലിക്കിൽ ലോഡ് ചെയ്യുക."
-                              : "Load pre-configured demo students and halls to test and explore the seating matrix."}
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleLoadDemoData}
-                          className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-xl text-xs transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer active:scale-98"
-                        >
-                          <span>⚡</span>
-                          <span>{lang === "ml" ? "ഡെമോ ലോഡ് ചെയ്യുക" : "Load Demo Data"}</span>
-                        </button>
                       </div>
 
                       {/* 4. Factory Reset */}
@@ -19897,22 +19818,13 @@ _Principal / Headmaster, ${madrasaName}_`;
       <FactoryResetModal
         isOpen={isFactoryResetModalOpen}
         onClose={() => setIsFactoryResetModalOpen(false)}
-        onFactoryWipe={(mode) => {
-          if (mode === "clean_slate") {
-            setStudents([]);
-            setHalls([]);
-            setMadrasaName("");
-            setMadrasaRegNo("");
-            setMadrasaPlace("");
-            showToast(lang === "ml" ? "✨ എല്ലാ ഡാറ്റയും റീസെറ്റ് ചെയ്തു (Clean Slate)." : "✨ All local data reset.", "info");
-          } else {
-            setStudents(initialStudents);
-            setHalls(initialHalls);
-            setMadrasaName("അൻവാറുൽ ഹുദാ മദ്റസ");
-            setMadrasaRegNo("5821 / SKIMVB");
-            setMadrasaPlace("മലപ്പുറം, കേരളം");
-            showToast(lang === "ml" ? "ഡെമോ ഡാറ്റ റീസ്റ്റോർ ചെയ്തു." : "Sample demo data restored.", "info");
-          }
+        onFactoryWipe={() => {
+          setStudents([]);
+          setHalls([]);
+          setMadrasaName("");
+          setMadrasaRegNo("");
+          setMadrasaPlace("");
+          showToast(lang === "ml" ? "✨ എല്ലാ ഡാറ്റയും റീസെറ്റ് ചെയ്തു (Clean Slate)." : "✨ All local data reset.", "info");
           setIsFactoryResetModalOpen(false);
         }}
         totalStudents={students.length}

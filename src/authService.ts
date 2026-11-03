@@ -1,6 +1,7 @@
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
+  signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
   GoogleAuthProvider,
@@ -17,7 +18,7 @@ import {
   getDocs, 
   serverTimestamp 
 } from "firebase/firestore";
-import { auth, db } from "./firebase";
+import app, { db, auth } from "./firebase";
 
 import { getSuperAdminList } from "./systemConfig";
 
@@ -74,17 +75,41 @@ function generateUidFromEmail(email: string): string {
   return "inst_" + Math.abs(hash).toString(36) + "_" + email.split("@")[0].replace(/[^a-zA-Z0-9]/g, "");
 }
 
-export async function loginWithGoogle(): Promise<void> {
+/**
+ * Robust Google Login - Tries Popup first, detects blocks.
+ */
+export async function loginWithGoogle(method: "popup" | "redirect" = "popup"): Promise<{ session?: AppUserSession; profile?: SaaSInstitutionProfile } | void> {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: "select_account" });
-  await signInWithRedirect(auth, provider);
+
+  if (method === "redirect") {
+    return await signInWithRedirect(auth, provider);
+  }
+
+  try {
+    const result = await signInWithPopup(auth, provider);
+    return await processAuthResult(result.user);
+  } catch (err: any) {
+    console.warn("Google login error:", err);
+    if (err.code === "auth/popup-blocked" || err.code === "auth/cancelled-popup-request") {
+      throw new Error("POPUP_BLOCKED");
+    }
+    throw err;
+  }
 }
 
 export async function processGoogleRedirectResult(): Promise<{ session: AppUserSession; profile: SaaSInstitutionProfile } | null> {
-  const result = await getRedirectResult(auth);
-  if (!result) return null;
+  try {
+    const result = await getRedirectResult(auth);
+    if (!result) return null;
+    return await processAuthResult(result.user);
+  } catch (e) {
+    console.error("processGoogleRedirectResult error:", e);
+    return null;
+  }
+}
 
-  const user = result.user;
+async function processAuthResult(user: FirebaseUser): Promise<{ session: AppUserSession; profile: SaaSInstitutionProfile }> {
   const sessionUid = user.uid;
   const userEmail = (user.email || "").toLowerCase();
   const userName = user.displayName || userEmail.split("@")[0];
@@ -109,7 +134,6 @@ export async function processGoogleRedirectResult(): Promise<{ session: AppUserS
 
     if (instDocSnap.exists()) {
       profile = instDocSnap.data() as SaaSInstitutionProfile;
-      // Guarantee superadmin role if email matches
       if (isSuper && profile.role !== "superadmin") {
         profile.role = "superadmin";
         await setDoc(instDocRef, { role: "superadmin" }, { merge: true });
@@ -146,7 +170,6 @@ export async function processGoogleRedirectResult(): Promise<{ session: AppUserS
     };
   }
 
-  // Save to LocalStorage for persistent seamless session
   localStorage.setItem(LOCAL_SESSION_KEY, JSON.stringify(userSession));
   localStorage.setItem(LOCAL_INSTITUTION_KEY, JSON.stringify(profile));
 

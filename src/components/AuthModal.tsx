@@ -54,6 +54,7 @@ export default function AuthModal({
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isPopupBlocked, setIsPopupBlocked] = useState(false);
 
   const [showQRBox, setShowQRBox] = useState(false);
   const [qrCodeStr, setQrCodeStr] = useState<string>("");
@@ -194,14 +195,53 @@ export default function AuthModal({
 
   if (!isOpen) return null;
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = async (method: "popup" | "redirect" = "popup") => {
     setLoading(true);
     setErrorMsg(null);
+    setIsPopupBlocked(false);
     try {
-      await loginWithGoogle();
+      const result = await loginWithGoogle(method);
+      if (result && result.session && result.profile) {
+        onAuthSuccess(result.session, result.profile);
+        setSuccessMsg(
+          result.profile.role === "superadmin"
+            ? (lang === "ml" ? "👑 സൂപ്പർ അഡ്മിൻ ഗൂഗിൾ അക്കൗണ്ട് വിജയകരമായി ലോഗിൻ ചെയ്തു!" : "👑 SuperAdmin Google Account Verified & Logged in!")
+            : (lang === "ml" ? "ഗൂഗിൾ അക്കൗണ്ട് വഴി വിജയകരമായി ലോഗിൻ ചെയ്തു!" : "Logged in with Google successfully!")
+        );
+        setTimeout(() => onClose(), 500);
+      }
     } catch (err: any) {
       console.error("Google login error:", err);
-      setErrorMsg(err.message || (lang === "ml" ? "ഗൂഗിൾ ലോഗിൻ ചെയ്യുന്നതിൽ തടസ്സം നേരിട്ടു." : "Google Sign-In failed. Please try again."));
+      const code = err?.code || "";
+      const msg = err?.message || "";
+      if (msg === "POPUP_BLOCKED" || code === "auth/popup-blocked" || code === "auth/cancelled-popup-request" || msg.includes("popup")) {
+        setIsPopupBlocked(true);
+        setErrorMsg(
+          lang === "ml" 
+            ? "ഗൂഗിൾ ലോഗിൻ പോപ്പപ്പ് ബ്രൗസർ തടഞ്ഞു (Popup Blocked). താഴെ കാണുന്ന ബട്ടൺ വഴി ലോഗിൻ ചെയ്യാൻ ശ്രമിക്കുക."
+            : "Google login popup was blocked. Please click 'Try Alternative Login' below."
+        );
+      } else if (code === "auth/popup-closed-by-user") {
+        setErrorMsg(
+          lang === "ml"
+            ? "ലോഗിൻ വിൻഡോ ക്ലോസ് ചെയ്തു (Popup closed by user). വീണ്ടും ശ്രമിക്കുക."
+            : "Sign-in popup was closed before completing. Please try again."
+        );
+      } else if (code === "auth/network-request-failed") {
+        setErrorMsg(
+          lang === "ml"
+            ? "ഇന്റർനെറ്റ് കണക്ഷനിൽ തടസ്സം നേരിട്ടു. കണക്ഷൻ പരിശോധിക്കുക."
+            : "Network error. Please check your internet connection and try again."
+        );
+      } else if (code === "auth/operation-not-supported-in-this-environment") {
+        setErrorMsg(
+          lang === "ml"
+            ? "ഈ ബ്രൗസർ എൻവയോൺമെന്റിൽ ലോഗിൻ തടസ്സപ്പെട്ടു. ദയവായി താഴെയുള്ള ഡയറക്ട് ലോഗിൻ അല്ലെങ്കിൽ ക്വിക്ക് QR ഉപയോഗിക്കുക."
+            : "Redirect login is not supported in this frame. Please use Direct Sign-in or QR Login."
+        );
+      } else {
+        setErrorMsg(err.message || (lang === "ml" ? "ഗൂഗിൾ ലോഗിൻ ചെയ്യുന്നതിൽ തടസ്സം നേരിട്ടു." : "Google Sign-In failed. Please try again."));
+      }
       setLoading(false);
     }
   };
@@ -627,6 +667,19 @@ export default function AuthModal({
                   {lang === "ml" ? "ഗൂഗിൾ അക്കൗണ്ട് വഴി ലോഗിൻ ചെയ്യുക" : "Continue with Google Account"}
                 </span>
               </button>
+
+              {/* Alternative Login Method (for mobile/popup issues) */}
+              {(isPopupBlocked || errorMsg?.includes("Popup Blocked") || errorMsg?.includes("തടഞ്ഞു")) && (
+                <button
+                  type="button"
+                  onClick={() => handleGoogleSignIn("redirect")}
+                  disabled={loading}
+                  className="w-full py-2.5 px-4 bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold border border-amber-200 rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-2 animate-pulse"
+                >
+                  <span>🔄</span>
+                  <span>{lang === "ml" ? "മറ്റൊരു രീതിയിൽ ലോഗിൻ ചെയ്യാൻ ശ്രമിക്കുക" : "Try Alternative Login Method"}</span>
+                </button>
+              )}
 
 
 

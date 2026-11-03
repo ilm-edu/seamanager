@@ -204,6 +204,27 @@ const TIMETABLES_FILE = path.join(process.cwd(), "timetables.json");
 const SYSTEM_CONFIG_FILE = path.join(process.cwd(), "system_config.json");
 const SUBJECT_DIRECTORY_FILE = path.join(process.cwd(), "subject_directory.json");
 
+function isAuthorizedAdminOrAccounts(emailOrSecret: string | undefined): boolean {
+  if (!emailOrSecret) return false;
+  const clean = emailOrSecret.trim().toLowerCase();
+  if (clean === "system_link_activation" || clean.includes("whatsapp") || clean === "edavachalniyas@gmail.com") return true;
+
+  try {
+    if (fs.existsSync(SYSTEM_CONFIG_FILE)) {
+      const cfg = JSON.parse(fs.readFileSync(SYSTEM_CONFIG_FILE, "utf-8"));
+      if (Array.isArray(cfg.superAdmins)) {
+        if (cfg.superAdmins.some((a: any) => a.email && a.email.toLowerCase() === clean)) return true;
+      }
+      if (Array.isArray(cfg.accountsUsers)) {
+        if (cfg.accountsUsers.some((u: any) => u.email && u.email.toLowerCase() === clean)) return true;
+      }
+    }
+  } catch (e) {}
+
+  if (clean === "accounts@madrasaseating.com") return true;
+  return false;
+}
+
 // Clean Slate: No hardcoded default board timetables
 const defaultOfficialTimetables: any[] = [];
 
@@ -902,19 +923,32 @@ app.put("/api/submissions/:id", (req, res) => {
   
   let subs = loadSubmissions();
   const subIndex = subs.findIndex(s => s.id === id);
-  if (subIndex === -1) {
-    res.status(404).json({ error: "Submission not found." });
+  if (subIndex !== -1) {
+    if (name) subs[subIndex].name = name;
+    if (regNo !== undefined) subs[subIndex].regNo = regNo;
+    if (place !== undefined) subs[subIndex].place = place;
+    if (phone !== undefined) subs[subIndex].phone = phone;
+    if (Array.isArray(students)) subs[subIndex].students = students;
+
+    saveSubmissions(subs);
+    res.json({ success: true, submission: subs[subIndex] });
     return;
   }
 
-  if (name) subs[subIndex].name = name;
-  if (regNo !== undefined) subs[subIndex].regNo = regNo;
-  if (place !== undefined) subs[subIndex].place = place;
-  if (phone !== undefined) subs[subIndex].phone = phone;
-  if (Array.isArray(students)) subs[subIndex].students = students;
+  // Also check and update tracked users if not in submissions
+  let tracked = loadTrackedUsers();
+  const trackIdx = tracked.findIndex(u => u.id === id);
+  if (trackIdx !== -1) {
+    if (name) tracked[trackIdx].name = name;
+    if (regNo !== undefined) tracked[trackIdx].regNo = regNo;
+    if (place !== undefined) tracked[trackIdx].place = place;
+    if (phone !== undefined) tracked[trackIdx].phone = phone;
+    saveTrackedUsers(tracked);
+    res.json({ success: true, submission: tracked[trackIdx] });
+    return;
+  }
 
-  saveSubmissions(subs);
-  res.json({ success: true, submission: subs[subIndex] });
+  res.status(404).json({ error: "Madrasa record not found." });
 });
 
 // Delete a submission
@@ -930,6 +964,44 @@ app.delete("/api/submissions/:id", (req, res) => {
   subs = subs.filter(s => s.id !== id);
   saveSubmissions(subs);
   res.json({ success: true });
+});
+
+// Permanent delete user & data by SuperAdmin
+app.delete("/api/admin/delete-user/:id", (req, res) => {
+  try {
+    const adminEmail = (req.headers["x-admin-email"] as string) || (req.body?.adminEmail as string) || (req.query?.adminEmail as string);
+    if (!isAuthorizedAdminOrAccounts(adminEmail)) {
+      res.status(403).json({ error: "Unauthorized: SuperAdmin authorization required." });
+      return;
+    }
+
+    const { id } = req.params;
+    if (!id) {
+      res.status(400).json({ error: "Missing user ID" });
+      return;
+    }
+
+    // 1. Delete from tracked users
+    let tracked = loadTrackedUsers();
+    tracked = tracked.filter(u => u.id !== id);
+    saveTrackedUsers(tracked);
+
+    // 2. Delete from submissions
+    let subs = loadSubmissions();
+    subs = subs.filter(s => s.id !== id);
+    saveSubmissions(subs);
+
+    // 3. Clean from licenses map if present
+    const map = loadLicensesMap();
+    if (map[id]) {
+      delete map[id];
+      saveLicensesMap(map);
+    }
+
+    res.json({ success: true, message: "User deleted successfully." });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- USER ACTIVITY TRACKING & MARKETING CRM INFRASTRUCTURE ---
@@ -1117,6 +1189,9 @@ app.get("/api/crm-users", (req, res) => {
         existing.regNo = existing.regNo || s.regNo;
         existing.place = existing.place || s.place;
         existing.source = "Registered Submission";
+        if (Array.isArray(s.students) && s.students.length > 0) {
+          existing.students = s.students;
+        }
       } else {
         unifiedMap.set(key, {
           id: s.id,
@@ -1127,6 +1202,7 @@ app.get("/api/crm-users", (req, res) => {
           email: s.email,
           studentCount: s.students?.length || 0,
           hallCount: 0,
+          students: s.students || [],
           lastActiveAt: (s as any).updatedAt || s.submittedAt || new Date().toISOString(),
           firstSeenAt: s.submittedAt || new Date().toISOString(),
           lastAction: "Submitted Excel / Students",
@@ -1137,6 +1213,27 @@ app.get("/api/crm-users", (req, res) => {
         });
       }
     });
+
+    // Ingest cloud backups to enrich students data if available
+    try {
+      if (fs.existsSync(CLOUD_BACKUPS_FILE)) {
+        const backups: any[] = JSON.parse(fs.readFileSync(CLOUD_BACKUPS_FILE, "utf-8"));
+        backups.forEach(b => {
+          if (!b.phone) return;
+          const key = b.phone.replace(/[^0-9]/g, "").slice(-10);
+          const existing = unifiedMap.get(key);
+          if (existing) {
+            if (b.payload?.students?.length) {
+              existing.students = b.payload.students;
+              existing.studentCount = Math.max(existing.studentCount, b.payload.students.length);
+            }
+            if (b.payload?.halls?.length) {
+              existing.hallCount = Math.max(existing.hallCount, b.payload.halls.length);
+            }
+          }
+        });
+      }
+    } catch (e) {}
 
     // 3. Link orders
     orders.forEach(o => {
@@ -1350,27 +1447,6 @@ function saveLicensesMap(map: Record<string, any>) {
   try {
     fs.writeFileSync(MADRASA_LICENSES_FILE, JSON.stringify(map, null, 2), "utf-8");
   } catch (e) {}
-}
-
-function isAuthorizedAdminOrAccounts(emailOrSecret: string | undefined): boolean {
-  if (!emailOrSecret) return false;
-  const clean = emailOrSecret.trim().toLowerCase();
-  if (clean === "system_link_activation" || clean.includes("whatsapp") || clean === "edavachalniyas@gmail.com") return true;
-
-  try {
-    if (fs.existsSync(SYSTEM_CONFIG_FILE)) {
-      const cfg = JSON.parse(fs.readFileSync(SYSTEM_CONFIG_FILE, "utf-8"));
-      if (Array.isArray(cfg.superAdmins)) {
-        if (cfg.superAdmins.some((a: any) => a.email && a.email.toLowerCase() === clean)) return true;
-      }
-      if (Array.isArray(cfg.accountsUsers)) {
-        if (cfg.accountsUsers.some((u: any) => u.email && u.email.toLowerCase() === clean)) return true;
-      }
-    }
-  } catch (e) {}
-
-  if (clean === "accounts@madrasaseating.com") return true;
-  return false;
 }
 
 app.get("/api/licenses", (req, res) => {

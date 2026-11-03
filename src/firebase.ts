@@ -3,7 +3,8 @@ import {
   initializeAuth, 
   getAuth, 
   browserLocalPersistence, 
-  inMemoryPersistence 
+  inMemoryPersistence,
+  setPersistence 
 } from "firebase/auth";
 import {
   initializeFirestore,
@@ -33,17 +34,15 @@ if (typeof window !== "undefined") {
 // Initialize Firebase App
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialize Auth with robust localStorage & inMemory persistence (completely avoids IndexedDB iframe closures)
-let authInstance;
-try {
-  authInstance = initializeAuth(app, {
-    persistence: [browserLocalPersistence, inMemoryPersistence]
-  });
-} catch (e) {
-  authInstance = getAuth(app);
-}
+// Initialize Auth with robust localStorage & inMemory persistence
+const auth = getAuth();
 
-export const auth = authInstance;
+// Set persistence
+setPersistence(auth, browserLocalPersistence).catch((err) => {
+  console.warn("Auth persistence error:", err);
+});
+
+export { auth };
 
 // Initialize Firestore with robust local offline cache and auto long-polling fallback
 let firestoreDb;
